@@ -1,0 +1,8 @@
+{
+  "name": "napcat-plugin-checkin",
+  "plugin": "群签到",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "description": "纯签到 + 连续天数 + 群排行 + 图片海报（Python PIL 生成）"
+}

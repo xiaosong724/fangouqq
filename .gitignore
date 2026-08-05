@@ -16,7 +16,7 @@ loadNapCat.js
 
 # ---- NapCat 主程序/运行时（版本随官方，不用 git 同步；白名单用 scripts/add_whitelist.py 打补丁）----
 napcat.mjs
-package.json
+/package.json
 node_modules/
 static/
 native/

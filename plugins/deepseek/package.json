@@ -1,0 +1,8 @@
+{
+  "name": "napcat-plugin-deepseek",
+  "plugin": "DeepSeek 群聊",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "description": "群聊 AI 助手：@机器人 触发，接入 DeepSeek（OpenAI 兼容 API）。API Key 配置在 config/plugins/napcat-plugin-deepseek/config.json 的 apiKey 字段，改完立即生效"
+}
