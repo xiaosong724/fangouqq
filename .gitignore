@@ -1,0 +1,41 @@
+# ============================================================
+# NapCat 仓库 .gitignore —— 只跟踪"可同步的功能代码"，绝不带密钥/数据
+# ============================================================
+
+# ---- 敏感配置：QQ 登录/网络/WebUI（含 token，绝不上传）----
+config/napcat.json
+config/napcat_*.json
+config/webui.json
+config/onebot11_*.json
+config/passkey.json
+config/qqnt.json
+config/plugins/napcat-plugin-deepseek/
+config/plugins/*/icon.png
+qqnt.json
+loadNapCat.js
+
+# ---- NapCat 主程序/运行时（版本随官方，不用 git 同步；白名单用 scripts/add_whitelist.py 打补丁）----
+napcat.mjs
+package.json
+node_modules/
+static/
+native/
+worker/
+logs/
+cache/
+*.dll
+*.exe
+*.bat
+conout-*.js
+
+# ---- 插件运行数据（本地独有，云端单独初始化）----
+plugins/checkin/data/*
+!plugins/checkin/data/sayings.json
+plugins/checkin/*.png
+plugins/*/node_modules/
+__pycache__/
+*.pyc
+
+# ---- 其他第三方/内置插件 ----
+plugins/napcat-plugin-ssqq/
+plugins/napcat-plugin-builtin/
