@@ -32,6 +32,19 @@ const SPEECH_CARD_SCRIPT = path.join(__dirname, 'gen_speech_card.py');
 const REPORT_STATE_FILE = path.join(DATA_DIR, 'report_state.json');
 const SAYINGS_FILE = path.join(DATA_DIR, 'sayings.json');
 let _sayings = null;
+
+// 娱乐竞猜（掷骰子赌大小：局制，开启后 30 秒自动开奖/关闭）
+const GAME_FILE = path.join(DATA_DIR, 'game.json');
+const GAME_DICE_SCRIPT = path.join(__dirname, 'gen_dice.py');
+const GAME_DURATION = 30;   // 开启后 30 秒自动开奖（无人下注则自动关闭）
+const GAME_MIN_BET = 10;    // 单注下限
+const GAME_BAO_ODDS = 24;   // 围骰赔率 1:24
+// 猜点数赔率（按出现概率倒算）：{ 点数: 赔率倍数 }
+const POINT_ODDS = {
+  10: 7, 11: 7, 9: 7, 12: 7, 8: 9, 13: 9, 7: 13, 14: 13,
+  6: 20, 15: 20, 5: 35, 16: 35, 4: 70, 17: 70, 3: 200, 18: 200,
+};
+let _games = null; // 内存态：{ 群号: { opener, open_at, bets, timer } }
 let _speechCache = null;
 let _reportState = null;
 let _ctx = null; // 定时器发布用（plugin_init 注入）
@@ -135,6 +148,171 @@ function pointsRank(groupId, limit = 10) {
     .filter((r) => r.points > 0)
     .sort((a, b) => b.points - a.points)
     .slice(0, limit);
+}
+
+// ---------------------------------------------------------------- 娱乐竞猜
+function gameLoad() {
+  if (_games) return _games;
+  try {
+    _games = JSON.parse(fs.readFileSync(GAME_FILE, 'utf-8'));
+  } catch {
+    _games = {};
+  }
+  return _games;
+}
+function gameSave() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const clean = {};
+  for (const [gid, g] of Object.entries(_games || {})) {
+    clean[gid] = { opener: g.opener, open_at: g.open_at, bets: g.bets };
+  }
+  const tmp = GAME_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(clean, null, 2), 'utf-8');
+  fs.renameSync(tmp, GAME_FILE);
+}
+function gameRemainSec(g) {
+  return Math.max(0, Math.ceil((g.open_at + GAME_DURATION * 1000 - Date.now()) / 1000));
+}
+function rollDice() {
+  return [1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6)];
+}
+function openGame(groupId, userId, nick) {
+  const games = gameLoad();
+  const old = games[groupId];
+  if (old) {
+    return { ok: false, msg: `已有竞猜进行中（剩余 ${gameRemainSec(old)} 秒），发「欧皇附体」可提前开奖` };
+  }
+  games[groupId] = { opener: userId, open_at: Date.now(), bets: [] };
+  gameSave();
+  scheduleGameEnd(groupId);
+  return { ok: true };
+}
+function placeBet(groupId, userId, nick, type, point, amount) {
+  const games = gameLoad();
+  const g = games[groupId];
+  if (!g) return { ok: false, msg: '本群还没开启竞猜，先发「开启娱乐竞猜」' };
+  if (g.bets.some((b) => b.qq === userId)) return { ok: false, msg: '每人每局限一注，你已经下过注了' };
+  if (!Number.isInteger(amount) || amount < GAME_MIN_BET) {
+    return { ok: false, msg: `单注至少 ${GAME_MIN_BET} 积分` };
+  }
+  const data = load();
+  const rec = data[groupId]?.[userId];
+  const pts = rec?.points || 0;
+  if (pts < amount) {
+    return { ok: false, msg: `积分不足（当前 ${pts} 分），先去「签到」攒积分吧` };
+  }
+  rec.points -= amount; // 下注即扣积分，无需确认
+  rec.game = rec.game || {};
+  rec.game.played = (rec.game.played || 0) + 1;
+  rec.game.maxBet = Math.max(rec.game.maxBet || 0, amount);
+  save(data);
+  g.bets.push({ qq: userId, nick: nick || userId, type, point, amount });
+  gameSave();
+  return { ok: true, points: rec.points };
+}
+function settleGame(groupId) {
+  const games = gameLoad();
+  const g = games[groupId];
+  if (!g) return null;
+  const dices = rollDice();
+  const sum = dices[0] + dices[1] + dices[2];
+  const isBao = dices[0] === dices[1] && dices[1] === dices[2]; // 围骰通吃
+  const verdict = isBao ? '围骰' : (sum >= 11 ? '大' : '小');
+  const results = g.bets.map((b) => {
+    let win = false;
+    let gain = 0;
+    let label = '';
+    if (b.type === 'big') {
+      label = '大';
+      win = !isBao && sum >= 11;
+      gain = win ? b.amount : 0;
+    } else if (b.type === 'small') {
+      label = '小';
+      win = !isBao && sum <= 10;
+      gain = win ? b.amount : 0;
+    } else if (b.type === 'bao') {
+      label = '爆';
+      win = isBao;
+      gain = win ? b.amount * GAME_BAO_ODDS : 0;
+    } else if (b.type === 'point') {
+      label = `和 ${b.point}`;
+      win = !isBao && sum === b.point;
+      gain = win ? b.amount * (POINT_ODDS[b.point] || 7) : 0;
+    }
+    return { qq: b.qq, nick: b.nick, label, amount: b.amount, win, gain };
+  });
+  // 结算积分与战绩
+  const data = load();
+  for (const r of results) {
+    const rec = data[groupId]?.[r.qq];
+    if (!rec) continue;
+    if (r.win) rec.points = (rec.points || 0) + r.amount + r.gain; // 退回本金 + 赔付
+    rec.game = rec.game || {};
+    if (r.win) rec.game.won = (rec.game.won || 0) + 1;
+    rec.game.net = (rec.game.net || 0) + (r.win ? r.gain : -r.amount);
+    rec.game.best = Math.max(rec.game.best || 0, r.gain);
+  }
+  save(data);
+  delete games[groupId];
+  gameSave();
+  clearTimeout(g.timer);
+  return { dices, sum, isBao, verdict, results };
+}
+function genDiceCard(groupId, settled) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(POSTER_DIR, { recursive: true });
+    const out = path.join(POSTER_DIR, `dice_${Date.now()}.png`);
+    const tmp = path.join(POSTER_DIR, `dice_${Date.now()}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(
+      settled.results.map((r) => ({ nick: r.nick, bet: r.label, amount: r.amount, win: r.win, gain: r.gain })),
+    ), 'utf-8');
+    const d = new Date();
+    const timeStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    execFile('python', [
+      GAME_DICE_SCRIPT,
+      '--group', groupId,
+      '--time', timeStr,
+      '--d1', String(settled.dices[0]),
+      '--d2', String(settled.dices[1]),
+      '--d3', String(settled.dices[2]),
+      '--is-bao', settled.isBao ? '1' : '0',
+      '--bets-json', tmp,
+      '--out', out,
+    ], { timeout: 20000, windowsHide: true }, (err) => (err ? reject(err) : resolve(out)));
+  });
+}
+async function finishGame(groupId) {
+  const settled = settleGame(groupId);
+  if (!settled) return;
+  try {
+    const img = await genDiceCard(groupId, settled);
+    await sendGroupById(groupId, [{ type: 'image', data: { file: img } }]);
+  } catch (e) {
+    logger?.error('竞猜结果卡片生成失败，改用文本:', e);
+    const lines = [`🎲 ${settled.dices.join(' · ')} = ${settled.sum}（${settled.verdict}${settled.isBao ? '！通吃' : ''}）`];
+    for (const r of settled.results) {
+      lines.push(`${r.nick || r.qq} 押${r.label} ${r.amount} 分 → ${r.win ? `🎉 +${r.gain}` : `💸 -${r.amount}`}`);
+    }
+    await sendGroupById(groupId, [lines.join('\n')]);
+  }
+}
+async function onGameTimeout(groupId) {
+  const games = gameLoad();
+  const g = games[groupId];
+  if (!g) return;
+  if (!g.bets.length) {
+    delete games[groupId];
+    gameSave();
+    await sendGroupById(groupId, ['🕳️ 30 秒无人参与，「娱乐竞猜」已自动关闭']);
+    return;
+  }
+  await finishGame(groupId);
+}
+function scheduleGameEnd(groupId, delayMs = GAME_DURATION * 1000) {
+  const g = gameLoad()[groupId];
+  if (!g) return;
+  clearTimeout(g.timer);
+  g.timer = setTimeout(onGameTimeout, delayMs, groupId);
 }
 
 // ---------------------------------------------------------------- 发言统计
@@ -362,6 +540,11 @@ const plugin_onmessage = async (ctx, event) => {
         + '积分 — 查询我的积分\n'
         + '积分排行 — 本群积分排行榜\n'
         + '转账积分 N @某人 — 转账积分给别人\n'
+        + '开启娱乐竞猜 — 开启一局竞猜（30 秒自动开奖）\n'
+        + '猜大/猜小/猜爆 金额 — 竞猜下注（豹子 1:24）\n'
+        + '猜 点数 金额 — 猜点数和 3-18（高赔）\n'
+        + '欧皇附体 — 截止竞猜立即开奖\n'
+        + '我的战绩 — 竞猜战绩查询\n'
         + '签到排行 — 本群签到排行榜\n'
         + '查看签到皮肤 — 6 款海报皮肤预览\n'
         + '选择签到皮肤N — 切换你的皮肤（N=1-6）\n'
@@ -462,6 +645,95 @@ const plugin_onmessage = async (ctx, event) => {
         return;
       }
       await sendGroup(ctx, event, [`✅ 已转账 ${amount} 积分给 ${r.toNick || target}\n你的剩余积分：${r.fromPoints}`]);
+      return;
+    }
+
+    // 开启娱乐竞猜
+    if (text === '开启娱乐竞猜' || text === '开启竞猜') {
+      const r = openGame(groupId, userId, nick);
+      if (!r.ok) {
+        await sendGroup(ctx, event, [`⚠️ ${r.msg}`]);
+        return;
+      }
+      await sendGroup(ctx, event, [
+        '🎲 娱乐竞猜已开启！\n'
+        + `⏱️ ${GAME_DURATION} 秒后自动开奖（无人下注则自动关闭）\n\n`
+        + '📖 下注方式（每人限一注，下注即扣积分）：\n'
+        + `猜大 100   —— 押大（和值 11-17，1:1）\n`
+        + `猜小 100   —— 押小（和值 4-10，1:1）\n`
+        + `猜爆 100   —— 押豹子（三骰相同，1:${GAME_BAO_ODDS}）\n`
+        + '猜 11 100  —— 猜点数和 3-18（高赔）\n\n'
+        + '🚀 提前开奖：欧皇附体',
+      ]);
+      return;
+    }
+
+    // 下注：猜大/猜小/猜爆/猜点数 金额（玩法开启后直接下注，无需确认）
+    const betMatch = text.match(/^猜(大|小|爆|(\d{1,2}))\s*(\d+)$/);
+    if (betMatch) {
+      const kind = betMatch[1];
+      const amount = parseInt(betMatch[3], 10);
+      let type, point = 0, label;
+      if (kind === '大') {
+        type = 'big'; label = '大';
+      } else if (kind === '小') {
+        type = 'small'; label = '小';
+      } else if (kind === '爆') {
+        type = 'bao'; label = '爆';
+      } else {
+        const p = parseInt(kind, 10);
+        if (p < 3 || p > 18) {
+          await sendGroup(ctx, event, ['⚠️ 猜点数范围为 3-18，例如：猜 11 100']);
+          return;
+        }
+        type = 'point'; point = p; label = `和 ${p}`;
+      }
+      const r = placeBet(groupId, userId, nick, type, point, amount);
+      if (!r.ok) {
+        await sendGroup(ctx, event, [`⚠️ ${r.msg}`]);
+        return;
+      }
+      await sendGroup(ctx, event, [`✅ 已下注：猜${label} ${amount} 分（当前 ${r.points} 分）`]);
+      return;
+    }
+
+    // 欧皇附体：截止下注立即开奖
+    if (text === '欧皇附体') {
+      const g = gameLoad()[groupId];
+      if (!g) {
+        await sendGroup(ctx, event, ['⚠️ 本群没有进行中的竞猜，先发「开启娱乐竞猜」']);
+        return;
+      }
+      if (!g.bets.length) {
+        const games = gameLoad();
+        delete games[groupId];
+        gameSave();
+        await sendGroup(ctx, event, ['🕳️ 无人下注，竞猜已关闭']);
+        return;
+      }
+      await sendGroup(ctx, event, ['🏁 已截止下注，开奖中……']);
+      await finishGame(groupId);
+      return;
+    }
+
+    // 我的战绩
+    if (text === '我的战绩' || text === '战绩') {
+      const rec = load()[groupId]?.[userId];
+      const g = rec?.game;
+      if (!g || !g.played) {
+        await sendGroup(ctx, event, ['📊 还没有竞猜战绩，发「开启娱乐竞猜」参与吧']);
+        return;
+      }
+      const winRate = Math.round(((g.won || 0) / g.played) * 100);
+      const net = g.net || 0;
+      await sendGroup(ctx, event, [
+        '📊 我的竞猜战绩\n'
+        + `下注次数：${g.played}\n`
+        + `赢的次数：${g.won || 0}（胜率 ${winRate}%）\n`
+        + `净盈亏：${net >= 0 ? '+' : ''}${net}\n`
+        + `单次最大赢：${g.best || 0}\n`
+        + `单次最大下注：${g.maxBet || 0}`,
+      ]);
       return;
     }
 
@@ -577,6 +849,13 @@ const plugin_init = async (ctx) => {
   _ctx = ctx;
   fs.mkdirSync(POSTER_DIR, { recursive: true });
   startReportScheduler();
+  // 恢复插件重载/重启前未结束的竞猜局（按剩余时间重挂定时器）
+  const games = gameLoad();
+  for (const gid of Object.keys(games)) {
+    const remainMs = gameRemainSec(games[gid]) * 1000;
+    scheduleGameEnd(gid, Math.max(remainMs, 1000));
+    logger.info(`恢复竞猜局 群 ${gid}（剩余 ${Math.ceil(remainMs / 1000)} 秒，${games[gid].bets.length} 注）`);
+  }
   logger.info('签到插件已初始化（data: ' + DATA_FILE + '）');
 };
 
