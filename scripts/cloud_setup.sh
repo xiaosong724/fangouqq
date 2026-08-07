@@ -20,7 +20,7 @@ NOTO_BOLD="/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 [ -f "$NOTO_BOLD" ] || NOTO_BOLD="/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttf"
 [ -f "$NOTO_REG" ] || NOTO_REG="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttf"
 [ -f "$NOTO_REG" ] || { echo "错误: 找不到 Noto 中文字体，请检查 fonts-noto-cjk 安装"; exit 1; }
-for f in plugins/checkin/gen_poster.py plugins/checkin/gen_skin_grid.py plugins/checkin/gen_speech_card.py; do
+for f in plugins/checkin/gen_poster.py plugins/checkin/gen_skin_grid.py plugins/checkin/gen_speech_card.py plugins/checkin/gen_dice.py; do
   sed -i "s#r'C:\\\\Windows\\\\Fonts\\\\msyh.ttc'#r'$NOTO_REG'#g; s#r'C:\\\\Windows\\\\Fonts\\\\msyhbd.ttc'#r'$NOTO_BOLD'#g" "$f"
 done
 echo "  字体已指向 $NOTO_REG / $NOTO_BOLD"
