@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """重置签到记录为可测试状态：把指定用户的 last_date 改为昨天（发「签到」即可触发海报）
-用法：python reset_checkin.py [--qq 495538306] [--group 876859661]
-默认：876859661 群的 495538306（半个六道）
-"""
+用法：python reset_checkin.py [--qq 495538306] [--group 876859661] [--streak 3]
+默认：876859661 群的 495538306（半个六道）；--streak 可把连续天数改为指定值（如 3 触发连续签到奖励）"""
 import argparse
 import io
 import json
@@ -16,6 +15,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qq", default="495538306")
     ap.add_argument("--group", default="876859661")
+    ap.add_argument("--streak", type=int, default=None, help="把连续天数改为指定值（如 3 触发连续签到奖励）")
     a = ap.parse_args()
 
     d = json.load(io.open(DATA_FILE, encoding="utf-8"))
@@ -26,6 +26,8 @@ def main():
 
     rec = group[a.qq]
     rec["last_date"] = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if a.streak is not None:
+        rec["streak"] = a.streak
     io.open(DATA_FILE, "w", encoding="utf-8", newline="\n").write(
         json.dumps(d, ensure_ascii=False, indent=2))
     print(f"已重置 {a.group}/{a.qq}: {rec['nick']} 的 last_date -> {rec['last_date']}"

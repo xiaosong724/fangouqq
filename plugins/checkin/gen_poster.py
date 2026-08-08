@@ -93,8 +93,8 @@ def center_text(draw, y, text, font, fill):
     draw.text(((W - w) / 2, y), text, font=font, fill=fill)
 
 
-def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", points=0):
-    """渲染海报，返回 PIL Image；saying 为给成员的话（底部显示，可换行），points 为积分"""
+def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", points=0, bonus=0):
+    """渲染海报，返回 PIL Image；saying 为给成员的话（底部显示，可换行），points 为积分，bonus 为连续签到额外奖励"""
     st = STYLES.get(style, STYLES["xianxia"])
 
     img = Image.new("RGB", (W, H))
@@ -143,7 +143,13 @@ def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", poin
         vw = draw.textlength(value, font=f_value)
         draw.text((x + (card_w - vw) / 2, y + 68), value, font=f_value, fill=st["title"])
 
-    # 底部：随机给成员的话（可换行）+ 提示
+    # 底部：连续签到奖励（第 3 天起显示）+ 随机给成员的话（可换行）+ 提示
+    say_y = 700
+    if bonus > 0:
+        f_bonus = load_font(22, True)
+        bonus_txt = "连续签到奖励 %d 积分" % bonus
+        center_text(draw, 700, bonus_txt, f_bonus, st["accent"])
+        say_y = 744
     if saying:
         f_say = load_font(22, False)
         max_w = W - 70
@@ -156,14 +162,14 @@ def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", poin
                 n -= 1
             lines.append(cur[:n])
             cur = cur[n:]
-        y = 700
+        y = say_y
         for ln in lines:
             lw = draw.textlength(ln, font=f_say)
             draw.text(((W - lw) / 2, y), ln, font=f_say, fill=st["sub"])
             y += 34
         center_text(draw, y + 14, "明日再来，保持连胜！", load_font(22, False), st["sub"])
     else:
-        center_text(draw, 740, "明日再来，保持连胜！", load_font(24, False), st["sub"])
+        center_text(draw, say_y + 40, "明日再来，保持连胜！", load_font(24, False), st["sub"])
     return img
 
 
@@ -177,11 +183,12 @@ def main():
     ap.add_argument("--date", default="")
     ap.add_argument("--style", default="xianxia")
     ap.add_argument("--saying", default="")
+    ap.add_argument("--bonus", type=int, default=0)
     ap.add_argument("--points", type=int, default=0)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
-    img = render(a.nick, a.qq, a.streak, a.total, a.rank, a.date, a.style, a.saying, a.points)
+    img = render(a.nick, a.qq, a.streak, a.total, a.rank, a.date, a.style, a.saying, a.points, a.bonus)
     img.save(a.out, "PNG")
     print("OK", a.out, a.style)
 

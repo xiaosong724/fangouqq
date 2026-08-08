@@ -30,6 +30,27 @@ const SEARCH_TIMEOUT_MS = 15000;
 const DEFAULT_SEARCH_PREFIX = '搜索'; // 消息以该词开头才联网（如「搜索 今天的新闻」）
 const DEFAULT_SEARCH_PROVIDER = 'serper';
 
+// ---------------------------------------------------------------- 群指令冲突过滤
+// 与其它插件（checkin 等）已定义的群指令：群友 @机器人 是来用指令的，不是聊天，不调 AI
+// 注意：deepseek 自身的「搜索用量/搜索统计/搜索xxx」在下方分支先处理，不在此列
+const IGNORE_EXACT_CMDS = [
+  'help', '帮助', '菜单',
+  '签到', '我的签到', '签到排行',
+  '积分', '我的积分', '积分排行', '积分榜',
+  '发言排行', '发言排行日', '发言排行月',
+  '开启娱乐竞猜', '开启竞猜', '欧皇附体', '我的战绩', '战绩',
+  '查看签到皮肤',
+];
+const IGNORE_PATTERN_CMDS = [
+  /^(转账积分|转账)\s*\d+$/,       // 转账积分 N @某人（@段不参与文本匹配）
+  /^猜(大|小|爆|\d{1,2})\s*\d+$/,  // 猜大/猜小/猜爆/猜N 金额
+  /^选择签到皮肤\s*\d+$/,          // 选择签到皮肤N
+];
+function isExistingCommand(text) {
+  if (IGNORE_EXACT_CMDS.includes(text)) return true;
+  return IGNORE_PATTERN_CMDS.some((re) => re.test(text));
+}
+
 let logger = null;
 let _ctx = null;
 
@@ -340,6 +361,9 @@ const plugin_onmessage = async (ctx, event) => {
     }
     return;
   }
+
+  // 群指令冲突：@机器人 但内容是已有群指令（签到/积分等），说明想用指令而非聊天，交给对应插件处理
+  if (isAtBot(event) && isExistingCommand(text)) return;
 
   if (!cfg.apiKey) {
     await sendGroup(String(event.group_id), ['🤖 管理员还没配置 DeepSeek API Key，填入后即可使用']);

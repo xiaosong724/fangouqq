@@ -94,9 +94,12 @@ function doCheckin(groupId, userId, nick) {
   if (typeof rec.points !== 'number') rec.points = 0;
   const gain = 1 + Math.floor(Math.random() * 100); // 签到随机 1-100 积分
   rec.points += gain;
+  // 连续签到奖励：连续第 3 天起（含第 3 天），只要不间断每天额外 +50 积分
+  const bonus = rec.streak >= 3 ? 50 : 0;
+  if (bonus > 0) rec.points += bonus;
   g[userId] = rec;
   save(data);
-  return { ok: true, streak: rec.streak, total: rec.total, last_date: t, skin: rec.skin, points: rec.points, gain };
+  return { ok: true, streak: rec.streak, total: rec.total, last_date: t, skin: rec.skin, points: rec.points, gain, bonus };
 }
 function getStatus(groupId, userId) {
   const rec = load()[groupId]?.[userId];
@@ -410,7 +413,19 @@ async function publishSpeechReport(groupId, title, sub, mapObj) {
     await sendGroupById(groupId, [`📣 ${title}\n${sub}\n` + lines.join('\n')]);
   }
 }
-// 定时发布：每日 0 点发昨日榜，每月 1 号 0 点发上月榜
+// 昨日发言第一名奖励 50 积分（写入签到积分，未签过到也建记录）
+function rewardTopSpeaker(groupId, dayMap) {
+  const top = speechRank(dayMap, 1)[0];
+  if (!top) return null;
+  const data = load();
+  const g = data[groupId] || (data[groupId] = {});
+  const rec = g[top.uid] || (g[top.uid] = { streak: 0, total: 0, last_date: '', nick: top.nick });
+  rec.points = (rec.points || 0) + 50;
+  if (top.nick) rec.nick = top.nick;
+  save(data);
+  return top;
+}
+// 定时发布：每日 0 点发昨日榜（第一名奖励 50 积分），每月 1 号 0 点发上月榜
 function startReportScheduler() {
   setInterval(async () => {
     try {
@@ -420,12 +435,19 @@ function startReportScheduler() {
       const yestDate = yesterday();
       const lm = lastMonthYm();
       const d = speechLoad();
-      // 昨日日榜
+      // 昨日日榜（第一名奖励 50 积分）
       if (st.daily !== yestDate) {
         for (const gid of Object.keys(d)) {
           const day = d[gid].daily?.[yestDate];
           if (day && Object.keys(day).length) {
-            await publishSpeechReport(gid, '昨日发言排行', `${yestDate} · 群聊数据`, day);
+            const top = rewardTopSpeaker(gid, day);
+            const sub = top
+              ? `${yestDate} · 群聊数据 · 🏆 第一名 ${top.nick || top.uid} +50 积分`
+              : `${yestDate} · 群聊数据`;
+            await publishSpeechReport(gid, '昨日发言排行', sub, day);
+            if (top) {
+              await sendGroupById(gid, [`🏆 昨日发言第一名 ${top.nick || top.uid}（${top.count} 条）获得 50 积分奖励！`]);
+            }
           }
         }
         st.daily = yestDate;
@@ -479,6 +501,7 @@ function genPoster(params) {
       '--date', params.date,
       '--style', params.style || 'ink',
       '--saying', params.saying || '',
+      '--bonus', String(params.bonus || 0),
       '--points', String(params.points || 0),
       '--out', out,
     ];
@@ -817,6 +840,7 @@ const plugin_onmessage = async (ctx, event) => {
         return;
       }
       const rank = getRank(groupId).findIndex((r) => r.uid === userId) + 1;
+      const bonusTxt = res.bonus > 0 ? `\n🎉 连续签到奖励 +${res.bonus} 积分（连续第 ${res.streak} 天）` : '';
       try {
         const poster = await genPoster({
           nick: nick || userId,
@@ -828,14 +852,15 @@ const plugin_onmessage = async (ctx, event) => {
           style: res.skin || 'ink',
           saying: randomSaying(),
           points: res.points,
+          bonus: res.bonus || 0,
         });
         await sendGroup(ctx, event, [
           { type: 'image', data: { file: poster } },
-          { type: 'text', data: { text: `✅ 签到成功！+${res.gain} 积分，当前 ${res.points} 分` } },
+          { type: 'text', data: { text: `✅ 签到成功！+${res.gain} 积分，当前 ${res.points} 分${bonusTxt}` } },
         ]);
       } catch (e) {
         logger?.error('生成海报失败，改用文本:', e);
-        await sendGroup(ctx, event, [`✅ 签到成功！+${res.gain} 积分（当前 ${res.points} 分）\n连续签到：${res.streak} 天\n累计签到：${res.total} 次`]);
+        await sendGroup(ctx, event, [`✅ 签到成功！+${res.gain} 积分（当前 ${res.points} 分）${bonusTxt}\n连续签到：${res.streak} 天\n累计签到：${res.total} 次`]);
       }
       return;
     }
