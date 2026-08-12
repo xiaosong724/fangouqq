@@ -92,14 +92,16 @@ function doCheckin(groupId, userId, nick) {
   if (nick) rec.nick = nick;
   if (!rec.skin) rec.skin = 'ink'; // 默认皮肤
   if (typeof rec.points !== 'number') rec.points = 0;
+  if (!rec.daily || typeof rec.daily !== 'object') rec.daily = {}; // 日历：{ "2026-08-01": 当日随机积分 }
   const gain = 1 + Math.floor(Math.random() * 100); // 签到随机 1-100 积分
   rec.points += gain;
+  rec.daily[t] = gain; // 记录当天随机积分，供海报日历标注
   // 连续签到奖励：连续第 3 天起（含第 3 天），只要不间断每天额外 +50 积分
   const bonus = rec.streak >= 3 ? 50 : 0;
   if (bonus > 0) rec.points += bonus;
   g[userId] = rec;
   save(data);
-  return { ok: true, streak: rec.streak, total: rec.total, last_date: t, skin: rec.skin, points: rec.points, gain, bonus };
+  return { ok: true, streak: rec.streak, total: rec.total, last_date: t, skin: rec.skin, points: rec.points, gain, bonus, daily: rec.daily };
 }
 function getStatus(groupId, userId) {
   const rec = load()[groupId]?.[userId];
@@ -503,6 +505,7 @@ function genPoster(params) {
       '--saying', params.saying || '',
       '--bonus', String(params.bonus || 0),
       '--points', String(params.points || 0),
+      '--calendar-json', JSON.stringify(params.calendar || {}),
       '--out', out,
     ];
     execFile('python', args, { timeout: 20000, windowsHide: true }, (err) => {
@@ -853,6 +856,7 @@ const plugin_onmessage = async (ctx, event) => {
           saying: randomSaying(),
           points: res.points,
           bonus: res.bonus || 0,
+          calendar: res.daily || {},
         });
         await sendGroup(ctx, event, [
           { type: 'image', data: { file: poster } },

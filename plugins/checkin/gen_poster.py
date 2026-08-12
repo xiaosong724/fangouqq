@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """签到海报生成器（NapCat 插件调用）
 用法：python gen_poster.py --nick 昵称 --qq QQ号 --streak 连续天数 --total 累计 --rank 排名 --date 日期 --style 款式 --out 输出.png
-款式：xianxia 仙侠紫(默认) / gold 鎏金 / ink 水墨 / frost 冰蓝
+款式：xianxia 仙侠紫(默认) / gold 鎏金 / ink 水墨 / frost 冰蓝 / sunset 落日 / sakura 樱花
 """
 import argparse
+import calendar as _cal
 import io
+import json
 import urllib.request
+from datetime import date as _date
 
 from PIL import Image, ImageDraw, ImageFont
 
 FONT = r'C:\Windows\Fonts\msyh.ttc'
 FONT_BOLD = r'C:\Windows\Fonts\msyhbd.ttc'
-W, H = 620, 860
+W, H = 620, 1280
 
 # ---------------------------------------------------------------- 款式定义
 STYLES = {
@@ -93,8 +96,66 @@ def center_text(draw, y, text, font, fill):
     draw.text(((W - w) / 2, y), text, font=font, fill=fill)
 
 
-def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", points=0, bonus=0):
-    """渲染海报，返回 PIL Image；saying 为给成员的话（底部显示，可换行），points 为积分，bonus 为连续签到额外奖励"""
+def contrast_color(c):
+    """按背景色亮度返回可读文字色：亮底深字 / 暗底白字"""
+    lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+    return (40, 40, 48) if lum > 150 else (255, 255, 255)
+
+
+def draw_calendar(draw, st, calendar_data):
+    """绘制本月签到日历：签到日以 accent 底色标注当天随机积分
+    calendar_data: {"2026-08-01": 45, ...}（当天随机积分）
+    返回日历区域底部 y（供下方文案定位）"""
+    now = _date.today()
+    ym = "%d-%02d" % (now.year, now.month)
+    first_wd = _date(now.year, now.month, 1).weekday()  # 0=周一
+    days_in_month = _cal.monthrange(now.year, now.month)[1]
+    today_num = now.day
+
+    CELL_W, CELL_H, GAP = 62, 54, 6
+    x0 = (W - (7 * CELL_W + 6 * GAP)) / 2
+    y0 = 792
+
+    # 表头（周一 → 周日）
+    f_head = load_font(18, False)
+    for c, h in enumerate(["一", "二", "三", "四", "五", "六", "日"]):
+        x = x0 + c * (CELL_W + GAP)
+        hw = draw.textlength(h, font=f_head)
+        draw.text((x + (CELL_W - hw) / 2, 764), h, font=f_head, fill=st["sub"])
+
+    f_day = load_font(16, False)
+    f_gain = load_font(24, True)
+    data = calendar_data if isinstance(calendar_data, dict) else {}
+    for day in range(1, days_in_month + 1):
+        idx = first_wd + day - 1
+        row, col = divmod(idx, 7)
+        x = x0 + col * (CELL_W + GAP)
+        y = y0 + row * (CELL_H + GAP)
+        key = "%s-%02d" % (ym, day)
+        gain = data.get(key)
+        if gain is not None:
+            # 签到日：accent 底色，顶部日期小字 + 中间当日积分
+            draw.rounded_rectangle((x, y, x + CELL_W, y + CELL_H), radius=8, fill=st["accent"])
+            ccol = contrast_color(st["accent"])
+            dw = draw.textlength(str(day), font=f_day)
+            draw.text((x + (CELL_W - dw) / 2, y + 3), str(day), font=f_day, fill=ccol)
+            gw = draw.textlength(str(gain), font=f_gain)
+            draw.text((x + (CELL_W - gw) / 2, y + CELL_H - 34), str(gain), font=f_gain, fill=ccol)
+        else:
+            # 未签到：卡片底色，只显示日期
+            draw.rounded_rectangle((x, y, x + CELL_W, y + CELL_H), radius=8, fill=st["card"])
+            dw = draw.textlength(str(day), font=f_day)
+            draw.text((x + (CELL_W - dw) / 2, y + (CELL_H - 22) / 2), str(day), font=f_day, fill=st["sub"])
+        if day == today_num:
+            # 今天：标题色描边
+            draw.rounded_rectangle((x + 2, y + 2, x + CELL_W - 2, y + CELL_H - 2),
+                                   radius=8, outline=st["title"], width=2)
+    return y0 + 6 * CELL_H + 5 * GAP  # 日历区域底部
+
+
+def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", points=0, bonus=0, calendar=None):
+    """渲染海报，返回 PIL Image；saying 为给成员的话（底部显示，可换行），points 为积分，
+    bonus 为连续签到额外奖励，calendar 为本月签到积分 {"2026-08-01": 45}"""
     st = STYLES.get(style, STYLES["xianxia"])
 
     img = Image.new("RGB", (W, H))
@@ -143,13 +204,20 @@ def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", poin
         vw = draw.textlength(value, font=f_value)
         draw.text((x + (card_w - vw) / 2, y + 68), value, font=f_value, fill=st["title"])
 
+    # 本月签到日历：签到日标注当天随机积分
+    now = _date.today()
+    center_text(draw, 700, "本 月 签 到 日 历", load_font(28, True), st["title"])
+    center_text(draw, 740, "%d 年 %d 月 · 签到的日子标注当日积分" % (now.year, now.month),
+                load_font(18, False), st["sub"])
+    cal_bottom = draw_calendar(draw, st, calendar)
+
     # 底部：连续签到奖励（第 3 天起显示）+ 随机给成员的话（可换行）+ 提示
-    say_y = 700
+    say_y = cal_bottom + 22
     if bonus > 0:
         f_bonus = load_font(22, True)
         bonus_txt = "连续签到奖励 %d 积分" % bonus
-        center_text(draw, 700, bonus_txt, f_bonus, st["accent"])
-        say_y = 744
+        center_text(draw, say_y, bonus_txt, f_bonus, st["accent"])
+        say_y += 34
     if saying:
         f_say = load_font(22, False)
         max_w = W - 70
@@ -167,7 +235,7 @@ def render(nick, qq, streak, total, rank, date, style="xianxia", saying="", poin
             lw = draw.textlength(ln, font=f_say)
             draw.text(((W - lw) / 2, y), ln, font=f_say, fill=st["sub"])
             y += 34
-        center_text(draw, y + 14, "明日再来，保持连胜！", load_font(22, False), st["sub"])
+        center_text(draw, y + 12, "明日再来，保持连胜！", load_font(22, False), st["sub"])
     else:
         center_text(draw, say_y + 40, "明日再来，保持连胜！", load_font(24, False), st["sub"])
     return img
@@ -185,10 +253,16 @@ def main():
     ap.add_argument("--saying", default="")
     ap.add_argument("--bonus", type=int, default=0)
     ap.add_argument("--points", type=int, default=0)
+    ap.add_argument("--calendar-json", default="{}")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
-    img = render(a.nick, a.qq, a.streak, a.total, a.rank, a.date, a.style, a.saying, a.points, a.bonus)
+    try:
+        calendar_data = json.loads(a.calendar_json)
+    except Exception:
+        calendar_data = {}
+    img = render(a.nick, a.qq, a.streak, a.total, a.rank, a.date, a.style,
+                 a.saying, a.points, a.bonus, calendar_data)
     img.save(a.out, "PNG")
     print("OK", a.out, a.style)
 
