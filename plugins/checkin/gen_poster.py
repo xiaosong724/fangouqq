@@ -14,12 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONT = r'C:\Windows\Fonts\msyh.ttc'
 FONT_BOLD = r'C:\Windows\Fonts\msyhbd.ttc'
-FONT_BRUSH = r'C:\Windows\Fonts\STXINGKA.TTF'  # 华文行楷（毛笔字，日历标注用；不存在时回退 FONT_BOLD）
-W, H = 620, 1280
-
-# 日历签到格：纸色底 + 红色毛笔字（朱批印章感）
-CAL_PAPER = (250, 244, 232)   # 米白纸色
-CAL_RED = (196, 42, 42)       # 朱红
+W, H = 620, 1330
 
 # ---------------------------------------------------------------- 款式定义
 STYLES = {
@@ -62,13 +57,8 @@ STYLES = {
 }
 
 
-def load_font(size, bold=True, brush=False):
-    """加载字体；brush=True 用毛笔字体（华文行楷，缺失时回退粗体）"""
-    path = FONT_BRUSH if brush else (FONT_BOLD if bold else FONT)
-    try:
-        return ImageFont.truetype(path, size)
-    except Exception:
-        return ImageFont.truetype(FONT_BOLD if bold else FONT, size)
+def load_font(size, bold=True):
+    return ImageFont.truetype(FONT_BOLD if bold else FONT, size)
 
 
 def download_avatar(qq, size=200):
@@ -113,7 +103,7 @@ def contrast_color(c):
 
 
 def draw_calendar(draw, st, calendar_data):
-    """绘制本月签到日历：签到日以纸色底 + 红色毛笔字标注（有积分显示积分，无积分显示「签」）
+    """绘制本月签到日历：签到日整格 accent 渐变高亮（上亮下暗），日期+积分反白显示
     calendar_data: {"2026-08-01": 45, "2026-08-02": null, ...}（null = 已签到但无当日积分记录）
     返回日历区域底部 y（供下方文案定位）"""
     now = _date.today()
@@ -122,19 +112,19 @@ def draw_calendar(draw, st, calendar_data):
     days_in_month = _cal.monthrange(now.year, now.month)[1]
     today_num = now.day
 
-    CELL_W, CELL_H, GAP = 62, 54, 6
+    CELL_W, CELL_H, GAP = 70, 62, 6
     x0 = (W - (7 * CELL_W + 6 * GAP)) / 2
     y0 = 792
 
     # 表头（周一 → 周日）
-    f_head = load_font(18, False)
+    f_head = load_font(20, False)
     for c, h in enumerate(["一", "二", "三", "四", "五", "六", "日"]):
         x = x0 + c * (CELL_W + GAP)
         hw = draw.textlength(h, font=f_head)
-        draw.text((x + (CELL_W - hw) / 2, 764), h, font=f_head, fill=st["sub"])
+        draw.text((x + (CELL_W - hw) / 2, 762), h, font=f_head, fill=st["sub"])
 
-    f_day = load_font(15, False, brush=True)   # 日期小字（毛笔）
-    f_gain = load_font(25, True, brush=True)   # 积分/「签」大字（毛笔）
+    f_day = load_font(16, False)   # 日期数字
+    f_bar = load_font(14, True)    # 底部积分条文字
     data = calendar_data if isinstance(calendar_data, dict) else {}
     for day in range(1, days_in_month + 1):
         idx = first_wd + day - 1
@@ -142,26 +132,25 @@ def draw_calendar(draw, st, calendar_data):
         x = x0 + col * (CELL_W + GAP)
         y = y0 + row * (CELL_H + GAP)
         key = "%s-%02d" % (ym, day)
+        draw.rounded_rectangle((x, y, x + CELL_W, y + CELL_H), radius=10, fill=st["card"])
+        # 日期数字（居中）
+        dw = draw.textlength(str(day), font=f_day)
+        draw.text((x + (CELL_W - dw) / 2, y + 14), str(day), font=f_day, fill=st["sub"])
         if key in data:
-            # 签到日：纸色底 + 红框 + 红色毛笔字（朱批印章感）
-            draw.rounded_rectangle((x, y, x + CELL_W, y + CELL_H), radius=8,
-                                   fill=CAL_PAPER, outline=CAL_RED, width=2)
+            # 签到日：底部 accent 圆角条内显示当日积分（历史无积分写「签」）
             gain = data.get(key)
             txt = str(gain) if gain is not None else "签"
-            f = f_gain if gain is not None else f_day
-            tw = draw.textlength(txt, font=f)
-            draw.text((x + (CELL_W - tw) / 2, y + (CELL_H - 34) / 2), txt, font=f, fill=CAL_RED)
-            dw = draw.textlength(str(day), font=f_day)
-            draw.text((x + (CELL_W - dw) / 2, y + 2), str(day), font=f_day, fill=CAL_RED)
-        else:
-            # 未签到：卡片底色，只显示日期
-            draw.rounded_rectangle((x, y, x + CELL_W, y + CELL_H), radius=8, fill=st["card"])
-            dw = draw.textlength(str(day), font=f_day)
-            draw.text((x + (CELL_W - dw) / 2, y + (CELL_H - 22) / 2), str(day), font=f_day, fill=st["sub"])
+            bar_h = 20
+            bar_y = y + CELL_H - bar_h - 3
+            draw.rounded_rectangle((x + 4, bar_y, x + CELL_W - 4, y + CELL_H - 3),
+                                   radius=8, fill=st["accent"])
+            tw = draw.textlength(txt, font=f_bar)
+            draw.text((x + (CELL_W - tw) / 2, bar_y + 2), txt, font=f_bar,
+                      fill=contrast_color(st["accent"]))
         if day == today_num:
             # 今天：标题色描边（叠加在最外层）
             draw.rounded_rectangle((x + 1, y + 1, x + CELL_W - 1, y + CELL_H - 1),
-                                   radius=8, outline=st["title"], width=2)
+                                   radius=10, outline=st["title"], width=2)
     return y0 + 6 * CELL_H + 5 * GAP  # 日历区域底部
 
 
