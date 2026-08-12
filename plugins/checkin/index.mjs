@@ -134,8 +134,21 @@ function transferPoints(groupId, from, to, amount) {
   return { ok: true, fromPoints: f.points, toNick: t.nick || '' };
 }
 
-function randomSaying() {
-  if (!_sayings) {
+// 海报日历数据：当日积分记录 + 回填最近连续签到段（无积分记录的历史日期标 null，海报显示红色「签」）
+function buildCalendar(res) {
+  const cal = Object.assign({}, res.daily || {});
+  if (res.last_date) {
+    const d = new Date(res.last_date + 'T00:00:00'); // 避免时区偏移
+    for (let i = 0; i < res.streak; i++) {
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!(key in cal)) cal[key] = null;
+      d.setDate(d.getDate() - 1);
+    }
+  }
+  return cal;
+}
+
+function randomSaying() {  if (!_sayings) {
     try {
       _sayings = JSON.parse(fs.readFileSync(SAYINGS_FILE, 'utf-8'));
     } catch {
@@ -856,7 +869,7 @@ const plugin_onmessage = async (ctx, event) => {
           saying: randomSaying(),
           points: res.points,
           bonus: res.bonus || 0,
-          calendar: res.daily || {},
+          calendar: buildCalendar(res),
         });
         await sendGroup(ctx, event, [
           { type: 'image', data: { file: poster } },
